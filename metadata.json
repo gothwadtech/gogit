@@ -1,0 +1,6 @@
+{
+  "name": "Gothwad Github",
+  "description": "Mobile-first full GitHub client with PAT authentication, repository management, code editor, and ZIP sync engine.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
