@@ -19,8 +19,9 @@ import {
   Check,
 } from 'lucide-react';
 import JSZip from 'jszip';
-import { GitHubRepo, GitHubBranch, BatchCommitProgress } from '../../types/github';
+import { GitHubRepo, GitHubBranch, BatchCommitProgress, BatchCommitResult } from '../../types/github';
 import { githubService } from '../../services/github';
+import { contentToBase64, formatBytes } from '../../utils/encoding';
 
 export type UploadMode = 'bulk_files' | 'folder' | 'zip' | 'scratchpad';
 
@@ -63,7 +64,7 @@ export const UniversalUploadModal: React.FC<UniversalUploadModalProps> = ({
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState<BatchCommitProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [successInfo, setSuccessInfo] = useState<{ commitSha: string; commitUrl: string; totalFiles: number } | null>(null);
+  const [successInfo, setSuccessInfo] = useState<BatchCommitResult | null>(null);
 
   // Refs for file inputs
   const multiFileInputRef = useRef<HTMLInputElement>(null);
@@ -71,15 +72,6 @@ export const UniversalUploadModal: React.FC<UniversalUploadModalProps> = ({
   const zipInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
-
-  // Helper to format bytes
-  const formatBytes = (bytes: number) => {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-  };
 
   // Check if file is text based on extension
   const isTextFile = (filename: string) => {
@@ -213,30 +205,36 @@ export const UniversalUploadModal: React.FC<UniversalUploadModalProps> = ({
         }
 
         const isText = isTextFile(entryName);
+        let content: string | Uint8Array;
+        let isBinary = !isText;
+
         if (isText) {
-          const text = await zipEntry.async('text');
-          extracted.push({
-            path: entryName.replace(/^\/+/, ''),
-            size: text.length,
-            content: text,
-            isBinary: false,
-            type: 'text/plain',
-          });
+          try {
+            content = await zipEntry.async('text');
+            isBinary = false;
+          } catch {
+            content = await zipEntry.async('uint8array');
+            isBinary = true;
+          }
         } else {
-          const uint8 = await zipEntry.async('uint8array');
-          extracted.push({
-            path: entryName.replace(/^\/+/, ''),
-            size: uint8.length,
-            content: uint8,
-            isBinary: true,
-            type: 'application/octet-stream',
-          });
+          content = await zipEntry.async('uint8array');
+          isBinary = true;
         }
+
+        const { byteSize } = contentToBase64(content);
+
+        extracted.push({
+          path: entryName.replace(/^\/+/, ''),
+          size: byteSize,
+          content,
+          isBinary,
+          type: isBinary ? 'application/octet-stream' : 'text/plain',
+        });
       }
 
       setStagedFiles(extracted);
       if (!commitMessage) {
-        setCommitMessage(`feat: import project from ${file.name}`);
+        setCommitMessage(`feat: import ${extracted.length} files from ${file.name}`);
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to unpack ZIP archive');
@@ -265,10 +263,11 @@ export const UniversalUploadModal: React.FC<UniversalUploadModalProps> = ({
         setError('Please enter a valid file path (e.g. src/index.ts)');
         return;
       }
+      const { byteSize } = contentToBase64(scratchContent);
       filesToCommit = [
         {
           path: cleanPath,
-          size: scratchContent.length,
+          size: byteSize,
           content: scratchContent,
           isBinary: false,
           type: 'text/plain',
@@ -299,12 +298,7 @@ export const UniversalUploadModal: React.FC<UniversalUploadModalProps> = ({
         (prog) => setProgress(prog)
       );
 
-      setSuccessInfo({
-        commitSha: result.commitSha,
-        commitUrl: result.commitUrl || `https://github.com/${repo.owner.login}/${repo.name}/commit/${result.commitSha}`,
-        totalFiles: filesToCommit.length,
-      });
-
+      setSuccessInfo(result);
       onUploadSuccess(selectedBranch);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Upload failed');
@@ -351,24 +345,52 @@ export const UniversalUploadModal: React.FC<UniversalUploadModalProps> = ({
 
         {/* Success View */}
         {successInfo ? (
-          <div className="p-8 text-center space-y-5 flex-1 overflow-y-auto">
-            <div className="w-16 h-16 rounded-full bg-[#0494f4]/15 text-[#0494f4] flex items-center justify-center mx-auto shadow-inner">
-              <CheckCircle2 className="w-9 h-9" />
+          <div className="p-6 sm:p-8 text-center space-y-4 flex-1 overflow-y-auto">
+            <div
+              className={`w-14 h-14 rounded-2xl flex items-center justify-center mx-auto shadow-sm ${
+                successInfo.success ? 'bg-[#0494f4] text-white' : 'bg-[#fbbc04] text-white'
+              }`}
+            >
+              {successInfo.success ? (
+                <CheckCircle2 className="w-8 h-8" />
+              ) : (
+                <AlertCircle className="w-8 h-8" />
+              )}
             </div>
-            <div className="space-y-1.5">
+            <div className="space-y-1">
               <h3 className="text-lg font-bold text-[#202124] dark:text-[#e8eaed]">
-                Commit Successfully Pushed!
+                {successInfo.success
+                  ? 'Commit Successfully Pushed!'
+                  : 'Commit Pushed with Warnings'}
               </h3>
               <p className="text-xs text-[#5f6368] dark:text-[#9aa0a6]">
-                {successInfo.totalFiles} files have been atomically committed to branch{' '}
+                <strong className="text-[#0494f4]">{successInfo.successfulCount} files</strong> committed to branch{' '}
                 <strong className="text-[#0494f4] font-mono">{selectedBranch}</strong>.
+                {successInfo.failedCount > 0 && (
+                  <span className="text-[#ea4335] block mt-0.5 font-semibold">
+                    {successInfo.failedCount} file(s) failed and were skipped.
+                  </span>
+                )}
               </p>
             </div>
 
             <div className="p-3 bg-[#f8f9fa] dark:bg-[#292a2d] border border-[#dadce0] dark:border-[#3c4043] rounded-2xl max-w-md mx-auto text-left font-mono text-xs space-y-1">
-              <div className="text-[#5f6368] dark:text-[#9aa0a6]">Commit SHA:</div>
+              <div className="text-[#5f6368] dark:text-[#9aa0a6] text-[11px]">Commit SHA:</div>
               <div className="text-[#0494f4] font-bold break-all">{successInfo.commitSha}</div>
             </div>
+
+            {successInfo.failedFiles.length > 0 && (
+              <div className="p-3 bg-[#ea4335]/10 border border-[#ea4335]/30 rounded-2xl max-w-md mx-auto text-left text-xs space-y-1 text-[#ea4335]">
+                <div className="font-bold">Failed Files:</div>
+                <div className="max-h-24 overflow-y-auto space-y-1 font-mono text-[11px]">
+                  {successInfo.failedFiles.map((f) => (
+                    <div key={f.path} className="truncate">
+                      • {f.path}: <span className="text-[#80868b]">{f.error}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="flex items-center justify-center gap-3 pt-2">
               <a

@@ -1,5 +1,6 @@
 import JSZip from 'jszip';
 import { ZipExtractedFile } from '../types/github';
+import { computeGitBlobSha, contentToBase64 } from './encoding';
 
 // Known binary extensions
 const BINARY_EXTENSIONS = new Set([
@@ -38,7 +39,7 @@ export async function parseZipArchive(file: File): Promise<ZipExtractedFile[]> {
   for (const [relativePath, zipEntry] of Object.entries(loadedZip.files)) {
     if (zipEntry.dir) continue; // Skip directory entries
 
-    // Ignore system files
+    // Ignore system / metadata files
     if (
       relativePath.includes('__MACOSX/') ||
       relativePath.endsWith('.DS_Store') ||
@@ -57,43 +58,35 @@ export async function parseZipArchive(file: File): Promise<ZipExtractedFile[]> {
     const fileName = cleanPath.split('/').pop() || cleanPath;
     const isBin = isBinaryExtension(fileName);
 
+    let content: string | Uint8Array;
+    let isBinaryFile = isBin;
+
     if (isBin) {
-      const uint8 = await zipEntry.async('uint8array');
-      extractedFiles.push({
-        path: cleanPath,
-        name: fileName,
-        size: uint8.length,
-        isDirectory: false,
-        isBinary: true,
-        content: uint8,
-        selected: true,
-      });
+      content = await zipEntry.async('uint8array');
     } else {
       try {
-        const text = await zipEntry.async('text');
-        extractedFiles.push({
-          path: cleanPath,
-          name: fileName,
-          size: text.length,
-          isDirectory: false,
-          isBinary: false,
-          content: text,
-          selected: true,
-        });
+        content = await zipEntry.async('text');
+        isBinaryFile = false;
       } catch {
         // Fallback to binary if text decoding fails
-        const uint8 = await zipEntry.async('uint8array');
-        extractedFiles.push({
-          path: cleanPath,
-          name: fileName,
-          size: uint8.length,
-          isDirectory: false,
-          isBinary: true,
-          content: uint8,
-          selected: true,
-        });
+        content = await zipEntry.async('uint8array');
+        isBinaryFile = true;
       }
     }
+
+    const { byteSize } = contentToBase64(content);
+    const calculatedSha = await computeGitBlobSha(content);
+
+    extractedFiles.push({
+      path: cleanPath,
+      name: fileName,
+      size: byteSize,
+      isDirectory: false,
+      isBinary: isBinaryFile,
+      content,
+      calculatedSha,
+      selected: true,
+    });
   }
 
   return extractedFiles;

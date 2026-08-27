@@ -200,6 +200,7 @@ export interface ZipExtractedFile {
   isBinary: boolean;
   content: string | Uint8Array; // utf-8 string or binary Uint8Array
   base64?: string;
+  calculatedSha?: string;
   selected?: boolean;
 }
 
@@ -210,6 +211,8 @@ export interface ZipDiffResult {
   zipFile?: ZipExtractedFile;
   repoSha?: string;
   repoSize?: number;
+  zipSha?: string;
+  zipSize?: number;
   status: DiffStatus;
   selected: boolean;
 }
@@ -221,6 +224,20 @@ export interface BatchCommitProgress {
   totalFiles: number;
   percent: number;
   message: string;
+  failedCount?: number;
+}
+
+export interface BatchCommitResult {
+  success: boolean;
+  commitSha: string;
+  commitUrl: string;
+  totalAttempted: number;
+  successfulCount: number;
+  failedCount: number;
+  successfulFiles: Array<{ path: string; size: number; sha: string }>;
+  failedFiles: Array<{ path: string; error: string }>;
+  deletedCount: number;
+  deletedPaths: string[];
 }
 
 // Commits & Time-Travel Graph Types

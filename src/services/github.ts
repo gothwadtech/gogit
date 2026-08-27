@@ -9,6 +9,7 @@ import {
   GitHubGist,
   GitHubRateLimit,
   BatchCommitProgress,
+  BatchCommitResult,
   GitHubCommitItem,
   GitHubCommitDetail,
   GitHubWorkflow,
@@ -18,6 +19,7 @@ import {
   GitHubTag,
 } from '../types/github';
 import { safeStorage } from '../utils/safeStorage';
+import { contentToBase64, formatBytes } from '../utils/encoding';
 
 const GITHUB_API_BASE = 'https://api.github.com';
 
@@ -246,23 +248,16 @@ class GitHubService {
     owner: string,
     repo: string,
     path: string,
-    contentUtf8: string,
+    content: string | Uint8Array,
     message: string,
     sha?: string,
     branch?: string
   ): Promise<{ content: GitHubFileContent; commit: { sha: string } }> {
-    // UTF-8 to Base64
-    const encoder = new TextEncoder();
-    const bytes = encoder.encode(contentUtf8);
-    let binary = '';
-    for (let i = 0; i < bytes.length; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
-    const base64Content = btoa(binary);
+    const { base64 } = contentToBase64(content);
 
     const body: Record<string, unknown> = {
       message,
-      content: base64Content,
+      content: base64,
     };
     if (sha) body.sha = sha;
     if (branch) body.branch = branch;
@@ -297,7 +292,7 @@ class GitHubService {
     });
   }
 
-  // 5. High-Speed Atomic Batch Commit for Multiple Files & Deletions (ZIP Sync)
+  // 5. High-Speed Resilient Atomic Batch Commit for Multiple Files & Deletions (ZIP Sync)
   public async batchCommitFiles(
     owner: string,
     repo: string,
@@ -310,7 +305,7 @@ class GitHubService {
     commitMessage: string,
     deletedPaths: string[] = [],
     onProgress?: (progress: BatchCommitProgress) => void
-  ): Promise<{ commitSha: string; commitUrl: string }> {
+  ): Promise<BatchCommitResult> {
     const totalFiles = files.length;
     const totalDeletes = deletedPaths.length;
     if (totalFiles === 0 && totalDeletes === 0) {
@@ -335,65 +330,93 @@ class GitHubService {
     );
     const baseTreeSha = commitData.tree.sha;
 
-    // 3. Create Blobs with fast parallel concurrency pool
+    // 3. Create Blobs with parallel concurrency and retry mechanism
     const treeEntries: Array<{ path: string; mode: string; type: 'blob'; sha: string | null }> = [];
-    const CONCURRENCY_LIMIT = 5;
+    const successfulFiles: Array<{ path: string; size: number; sha: string }> = [];
+    const failedFiles: Array<{ path: string; error: string }> = [];
+
+    const CONCURRENCY_LIMIT = 4;
     let completedBlobCount = 0;
 
-    // Helper to upload single blob
-    const uploadSingleBlob = async (file: { path: string; content: string | Uint8Array; isBinary?: boolean }) => {
-      let blobContent = '';
-      let encoding = 'utf-8';
+    // Helper with exponential retry to upload a single blob safely
+    const uploadSingleBlobWithRetry = async (
+      file: { path: string; content: string | Uint8Array; isBinary?: boolean },
+      retries: number = 3
+    ): Promise<{ path: string; mode: '100644'; type: 'blob'; sha: string; size: number } | null> => {
+      let lastError: unknown;
+      const { base64, byteSize } = contentToBase64(file.content);
 
-      if (typeof file.content === 'string') {
-        blobContent = file.content;
-        encoding = 'utf-8';
-      } else {
-        let binary = '';
-        const bytes = file.content;
-        for (let j = 0; j < bytes.length; j++) {
-          binary += String.fromCharCode(bytes[j]);
+      for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+          const blobRes = await this.request<{ sha: string }>(`/repos/${owner}/${repo}/git/blobs`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              content: base64,
+              encoding: 'base64',
+            }),
+          });
+
+          if (!blobRes || !blobRes.sha) {
+            throw new Error(`Invalid response from GitHub Blobs API for ${file.path}`);
+          }
+
+          completedBlobCount++;
+          const percent = Math.round(10 + (completedBlobCount / Math.max(totalFiles, 1)) * 60);
+          onProgress?.({
+            step: 'blobs',
+            currentFile: file.path,
+            completedFiles: completedBlobCount,
+            totalFiles: totalFiles + totalDeletes,
+            percent,
+            message: `Uploaded [${completedBlobCount}/${totalFiles}] ${file.path} (${formatBytes(byteSize)})`,
+            failedCount: failedFiles.length,
+          });
+
+          return {
+            path: file.path,
+            mode: '100644',
+            type: 'blob',
+            sha: blobRes.sha,
+            size: byteSize,
+          };
+        } catch (err: unknown) {
+          lastError = err;
+          if (attempt < retries) {
+            // Wait with backoff before retry (300ms, 800ms)
+            await new Promise((resolve) => setTimeout(resolve, attempt * 350));
+          }
         }
-        blobContent = btoa(binary);
-        encoding = 'base64';
       }
 
-      const blobRes = await this.request<{ sha: string }>(`/repos/${owner}/${repo}/git/blobs`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          content: blobContent,
-          encoding,
-        }),
-      });
-
-      completedBlobCount++;
-      const percent = Math.round(10 + (completedBlobCount / Math.max(totalFiles, 1)) * 60);
-      onProgress?.({
-        step: 'blobs',
-        currentFile: file.path,
-        completedFiles: completedBlobCount,
-        totalFiles: totalFiles + totalDeletes,
-        percent,
-        message: `Uploaded blob ${completedBlobCount}/${totalFiles}: ${file.path}`,
-      });
-
-      return {
-        path: file.path,
-        mode: '100644' as const,
-        type: 'blob' as const,
-        sha: blobRes.sha,
-      };
+      const errorMsg = lastError instanceof Error ? lastError.message : 'Upload failed';
+      failedFiles.push({ path: file.path, error: errorMsg });
+      console.warn(`[BatchCommit] Failed to upload blob for ${file.path}:`, errorMsg);
+      return null;
     };
 
-    // Execute in parallel batches
+    // Execute uploads in batches with controlled concurrency
     for (let i = 0; i < files.length; i += CONCURRENCY_LIMIT) {
       const chunk = files.slice(i, i + CONCURRENCY_LIMIT);
-      const chunkResults = await Promise.all(chunk.map((f) => uploadSingleBlob(f)));
-      treeEntries.push(...chunkResults);
+      const results = await Promise.all(chunk.map((f) => uploadSingleBlobWithRetry(f)));
+      for (const res of results) {
+        if (res) {
+          treeEntries.push({
+            path: res.path,
+            mode: res.mode,
+            type: res.type,
+            sha: res.sha,
+          });
+          successfulFiles.push({
+            path: res.path,
+            size: res.size,
+            sha: res.sha,
+          });
+        }
+      }
     }
 
-    // Add deleted paths to the tree entries with sha: null (Git Tree API deletes file from base_tree)
+    // Add deleted paths with sha: null
     for (const delPath of deletedPaths) {
       treeEntries.push({
         path: delPath,
@@ -403,13 +426,20 @@ class GitHubService {
       });
     }
 
+    // If all files failed and there are no deletions, abort
+    if (treeEntries.length === 0) {
+      const firstErr = failedFiles[0]?.error || 'Failed to upload files';
+      throw new Error(`All file uploads failed. ${firstErr}`);
+    }
+
     // 4. Create new Git Tree
     onProgress?.({
       step: 'tree',
       completedFiles: totalFiles,
       totalFiles: totalFiles + totalDeletes,
       percent: 75,
-      message: `Building Git Tree (${totalFiles} updated, ${totalDeletes} removed)...`,
+      message: `Constructing Git Tree (${successfulFiles.length} files, ${totalDeletes} removed)...`,
+      failedCount: failedFiles.length,
     });
 
     const newTreeRes = await this.request<{ sha: string }>(`/repos/${owner}/${repo}/git/trees`, {
@@ -428,13 +458,14 @@ class GitHubService {
       totalFiles: totalFiles + totalDeletes,
       percent: 88,
       message: 'Creating commit object...',
+      failedCount: failedFiles.length,
     });
 
     const defaultMsg =
-      totalFiles > 0 && totalDeletes > 0
-        ? `feat: sync ${totalFiles} files and remove ${totalDeletes} legacy files via Gothwad ZIP Sync`
-        : totalFiles > 0
-        ? `feat: sync ${totalFiles} files via Gothwad ZIP Sync`
+      successfulFiles.length > 0 && totalDeletes > 0
+        ? `feat: sync ${successfulFiles.length} files and remove ${totalDeletes} legacy files via Gothwad ZIP Sync`
+        : successfulFiles.length > 0
+        ? `feat: sync ${successfulFiles.length} files via Gothwad ZIP Sync`
         : `chore: remove ${totalDeletes} legacy files`;
 
     const newCommitRes = await this.request<{ sha: string; html_url: string }>(`/repos/${owner}/${repo}/git/commits`, {
@@ -453,7 +484,8 @@ class GitHubService {
       completedFiles: totalFiles + totalDeletes,
       totalFiles: totalFiles + totalDeletes,
       percent: 95,
-      message: `Pushing changes to branch '${branch}'...`,
+      message: `Pushing atomic commit to branch '${branch}'...`,
+      failedCount: failedFiles.length,
     });
 
     await this.request<{ object: { sha: string } }>(`/repos/${owner}/${repo}/git/refs/heads/${branch}`, {
@@ -465,17 +497,30 @@ class GitHubService {
       }),
     });
 
+    const isFullySuccessful = failedFiles.length === 0;
+
     onProgress?.({
       step: 'completed',
       completedFiles: totalFiles + totalDeletes,
       totalFiles: totalFiles + totalDeletes,
       percent: 100,
-      message: `Successfully synchronized (${totalFiles} updated, ${totalDeletes} deleted) to ${owner}/${repo} (${branch})!`,
+      message: isFullySuccessful
+        ? `Successfully synchronized ${successfulFiles.length} files (${totalDeletes} removed) to ${owner}/${repo} (${branch})!`
+        : `Synchronized ${successfulFiles.length} files. (${failedFiles.length} files skipped due to errors).`,
+      failedCount: failedFiles.length,
     });
 
     return {
+      success: isFullySuccessful,
       commitSha: newCommitRes.sha,
       commitUrl: `https://github.com/${owner}/${repo}/commit/${newCommitRes.sha}`,
+      totalAttempted: totalFiles,
+      successfulCount: successfulFiles.length,
+      failedCount: failedFiles.length,
+      successfulFiles,
+      failedFiles,
+      deletedCount: totalDeletes,
+      deletedPaths,
     };
   }
 
@@ -489,7 +534,7 @@ class GitHubService {
     deletedPaths: string[],
     commitMessage?: string,
     onProgress?: (progress: BatchCommitProgress) => void
-  ): Promise<{ commitSha: string; commitUrl: string }> {
+  ): Promise<BatchCommitResult> {
     return this.batchCommitFiles(
       owner,
       repo,

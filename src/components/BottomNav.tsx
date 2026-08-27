@@ -23,14 +23,12 @@ export const BottomNav: React.FC<BottomNavProps> = ({
   activeTab,
   onTabChange,
   issuesCount = 0,
-  user,
 }) => {
   const navItems: Array<{
     id: TabType;
     label: string;
     badge?: number | string;
     icon: React.ComponentType<{ className?: string }>;
-    isAvatar?: boolean;
   }> = [
     {
       id: 'repos',
@@ -62,7 +60,6 @@ export const BottomNav: React.FC<BottomNavProps> = ({
       id: 'profile',
       label: 'Profile',
       icon: User,
-      isAvatar: true,
     },
   ];
 
@@ -93,17 +90,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
                     : 'text-[#5f6368] dark:text-[#9aa0a6] hover:bg-black/5 dark:hover:bg-white/5'
                 }`}
               >
-                {item.isAvatar && user?.avatar_url ? (
-                  <img
-                    src={user.avatar_url}
-                    alt={user.login}
-                    className={`w-5 h-5 sm:w-5.5 sm:h-5.5 rounded-full object-cover border ${
-                      isActive ? 'border-[#0494f4] ring-1 ring-[#0494f4]' : 'border-[#dadce0] dark:border-[#3c4043]'
-                    }`}
-                  />
-                ) : (
-                  <Icon className={`w-5 h-5 sm:w-5.5 sm:h-5.5 ${isActive ? 'stroke-[2.2]' : 'stroke-[1.8]'}`} />
-                )}
+                <Icon className={`w-5 h-5 sm:w-5.5 sm:h-5.5 ${isActive ? 'stroke-[2.2]' : 'stroke-[1.8]'}`} />
 
                 {/* Numeric Badge (e.g. Issues Count) */}
                 {item.badge !== undefined && (

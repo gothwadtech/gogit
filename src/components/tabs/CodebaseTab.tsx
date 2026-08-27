@@ -33,12 +33,15 @@ import {
   ZipDiffResult,
   DiffStatus,
   BatchCommitProgress,
+  BatchCommitResult,
 } from '../../types/github';
 import { githubService } from '../../services/github';
 import { parseZipArchive } from '../../utils/zipParser';
+import { formatBytes } from '../../utils/encoding';
 import { CodeViewer } from '../common/CodeViewer';
 import { NewFileModal } from '../modals/NewFileModal';
 import { UniversalUploadModal } from '../modals/UniversalUploadModal';
+import { SyncResultModal } from '../modals/SyncResultModal';
 import { CodebaseExplorer } from '../common/CodebaseExplorer';
 import { CommitsView } from './CommitsView';
 import { ActionsView } from './ActionsView';
@@ -90,12 +93,14 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
   const [zipFiles, setZipFiles] = useState<ZipExtractedFile[]>([]);
   const [zipDiffList, setZipDiffList] = useState<ZipDiffResult[]>([]);
   const [zipFilter, setZipFilter] = useState<'all' | 'new_modified' | 'identical' | 'repo_only'>('all');
+  const [zipSearchQuery, setZipSearchQuery] = useState('');
   const [isParsingZip, setIsParsingZip] = useState(false);
   const [isComparing, setIsComparing] = useState(false);
   const [showZipSyncPanel, setShowZipSyncPanel] = useState(false);
   const [zipCommitMessage, setZipCommitMessage] = useState('');
   const [batchProgress, setBatchProgress] = useState<BatchCommitProgress | null>(null);
   const [isCommittingBatch, setIsCommittingBatch] = useState(false);
+  const [syncResultModal, setSyncResultModal] = useState<BatchCommitResult | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -274,7 +279,7 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
       const parsedFiles = await parseZipArchive(file);
       setZipFiles(parsedFiles);
 
-      // Now run comparison against repository tree
+      // Now run comparison against repository tree using exact Git Blob SHA
       setIsComparing(true);
       const diffResults: ZipDiffResult[] = [];
 
@@ -296,19 +301,29 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
           diffResults.push({
             path: zf.path,
             zipFile: zf,
+            zipSize: zf.size,
+            zipSha: zf.calculatedSha,
             status: 'new',
             selected: true,
           });
         } else {
-          // Exists in both: compare size as primary quick check
-          const isSameSize = repoItem.size !== undefined && repoItem.size === zf.size;
+          // Compare exact Git blob SHA-1 hash
+          const isIdentical =
+            zf.calculatedSha &&
+            repoItem.sha &&
+            zf.calculatedSha.toLowerCase() === repoItem.sha.toLowerCase();
+
+          const status: DiffStatus = isIdentical ? 'unchanged' : 'modified';
+
           diffResults.push({
             path: zf.path,
             zipFile: zf,
+            zipSize: zf.size,
+            zipSha: zf.calculatedSha,
             repoSha: repoItem.sha,
             repoSize: repoItem.size,
-            status: isSameSize ? 'unchanged' : 'modified',
-            selected: !isSameSize, // Auto-select modified files
+            status,
+            selected: !isIdentical, // Auto-select modified files, leave identical unselected
           });
         }
       }
@@ -362,6 +377,12 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
     );
   };
 
+  const handleSelectAllZipFiles = (selectAll: boolean) => {
+    setZipDiffList((prev) =>
+      prev.map((item) => (item.status !== 'repo_only' ? { ...item, selected: selectAll } : item))
+    );
+  };
+
   // Perform Atomic Batch Sync to GitHub (Uploads + Deletions)
   const handleExecuteBatchSync = async () => {
     if (!selectedRepo || !selectedBranch) return;
@@ -393,7 +414,7 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
         message: 'Initializing Git commit...',
       });
 
-      await githubService.batchCommitFiles(
+      const result = await githubService.batchCommitFiles(
         selectedRepo.owner.login,
         selectedRepo.name,
         selectedBranch,
@@ -406,22 +427,25 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
         }
       );
 
-      // Refresh repository tree
-      setTimeout(() => {
-        loadTree(selectedRepo, selectedBranch);
-        setShowZipSyncPanel(false);
-        setZipFiles([]);
-        setZipDiffList([]);
-        setIsCommittingBatch(false);
-        setBatchProgress(null);
-      }, 1500);
+      // Refresh repository tree and display comprehensive Result Modal
+      loadTree(selectedRepo, selectedBranch);
+      setShowZipSyncPanel(false);
+      setZipFiles([]);
+      setZipDiffList([]);
+      setSyncResultModal(result);
     } catch (err: unknown) {
       alert(err instanceof Error ? err.message : 'Batch synchronization failed');
+    } finally {
       setIsCommittingBatch(false);
+      setBatchProgress(null);
     }
   };
 
   const filteredZipDiff = zipDiffList.filter((d) => {
+    if (zipSearchQuery.trim()) {
+      const q = zipSearchQuery.toLowerCase();
+      if (!d.path.toLowerCase().includes(q)) return false;
+    }
     if (zipFilter === 'new_modified') return d.status === 'new' || d.status === 'modified';
     if (zipFilter === 'identical') return d.status === 'unchanged';
     if (zipFilter === 'repo_only') return d.status === 'repo_only';
@@ -432,6 +456,7 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
   const modifiedCount = zipDiffList.filter((d) => d.status === 'modified').length;
   const identicalCount = zipDiffList.filter((d) => d.status === 'unchanged').length;
   const repoOnlyCount = zipDiffList.filter((d) => d.status === 'repo_only').length;
+  const totalZipCount = zipDiffList.filter((d) => d.status !== 'repo_only').length;
   const selectedUploadCount = zipDiffList.filter((d) => d.selected && d.status !== 'repo_only').length;
   const selectedDeleteCount = zipDiffList.filter((d) => d.selected && d.status === 'repo_only').length;
 
@@ -680,7 +705,7 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
         <>
           {/* ZIP Sync Panel */}
           {showZipSyncPanel && (
-        <div className="bg-white dark:bg-[#292a2d] border-2 border-[#0494f4] rounded-3xl p-5 shadow-lg space-y-4 transition-colors duration-200">
+        <div className="bg-white dark:bg-[#292a2d] border-2 border-[#0494f4] rounded-3xl p-4 sm:p-5 shadow-lg space-y-4 transition-colors duration-200">
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="flex items-center gap-2">
@@ -692,7 +717,7 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
                 </h3>
               </div>
               <p className="text-xs text-[#5f6368] dark:text-[#9aa0a6] mt-1">
-                Extracted <span className="font-bold text-[#202124] dark:text-[#e8eaed]">{zipFiles.length} files</span> locally. Compare with existing GitHub codebase and choose what to sync or clean.
+                Extracted <span className="font-bold text-[#0494f4]">{zipFiles.length} files</span> locally with exact Git Blob SHA hashing. Compare with repository codebase and select files to sync or clean.
               </p>
             </div>
 
@@ -704,61 +729,75 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
             </button>
           </div>
 
-          {/* Diff Filter Tabs */}
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs">
-            <button
-              onClick={() => setZipFilter('all')}
-              className={`px-3 py-1.5 rounded-xl font-bold transition whitespace-nowrap ${
-                zipFilter === 'all'
-                  ? 'bg-[#0494f4] text-white'
-                  : 'bg-[#f1f3f4] dark:bg-[#303134] text-[#5f6368] dark:text-[#9aa0a6]'
-              }`}
-            >
-              All ({zipDiffList.length})
-            </button>
+          {/* Diff Filter Tabs & Search */}
+          <div className="space-y-2.5">
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs">
+              <button
+                onClick={() => setZipFilter('all')}
+                className={`px-3 py-1.5 rounded-xl font-bold transition whitespace-nowrap ${
+                  zipFilter === 'all'
+                    ? 'bg-[#0494f4] text-white'
+                    : 'bg-[#f1f3f4] dark:bg-[#303134] text-[#5f6368] dark:text-[#9aa0a6]'
+                }`}
+              >
+                All ({zipDiffList.length})
+              </button>
 
-            <button
-              onClick={() => setZipFilter('new_modified')}
-              className={`px-3 py-1.5 rounded-xl font-bold transition whitespace-nowrap flex items-center gap-1.5 ${
-                zipFilter === 'new_modified'
-                  ? 'bg-[#34a853] text-white'
-                  : 'bg-[#f1f3f4] dark:bg-[#303134] text-[#34a853]'
-              }`}
-            >
-              <span>New & Modified</span>
-              <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-black/10">
-                {newCount + modifiedCount}
-              </span>
-            </button>
+              <button
+                onClick={() => setZipFilter('new_modified')}
+                className={`px-3 py-1.5 rounded-xl font-bold transition whitespace-nowrap flex items-center gap-1.5 ${
+                  zipFilter === 'new_modified'
+                    ? 'bg-[#34a853] text-white'
+                    : 'bg-[#f1f3f4] dark:bg-[#303134] text-[#34a853]'
+                }`}
+              >
+                <span>New & Modified</span>
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-black/10">
+                  {newCount + modifiedCount}
+                </span>
+              </button>
 
-            <button
-              onClick={() => setZipFilter('identical')}
-              className={`px-3 py-1.5 rounded-xl font-bold transition whitespace-nowrap flex items-center gap-1.5 ${
-                zipFilter === 'identical'
-                  ? 'bg-[#5f6368] text-white'
-                  : 'bg-[#f1f3f4] dark:bg-[#303134] text-[#5f6368] dark:text-[#9aa0a6]'
-              }`}
-            >
-              <span>Identical</span>
-              <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-black/10">
-                {identicalCount}
-              </span>
-            </button>
+              <button
+                onClick={() => setZipFilter('identical')}
+                className={`px-3 py-1.5 rounded-xl font-bold transition whitespace-nowrap flex items-center gap-1.5 ${
+                  zipFilter === 'identical'
+                    ? 'bg-[#5f6368] text-white'
+                    : 'bg-[#f1f3f4] dark:bg-[#303134] text-[#5f6368] dark:text-[#9aa0a6]'
+                }`}
+              >
+                <span>Identical</span>
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-black/10">
+                  {identicalCount}
+                </span>
+              </button>
 
-            <button
-              onClick={() => setZipFilter('repo_only')}
-              className={`px-3 py-1.5 rounded-xl font-bold transition whitespace-nowrap flex items-center gap-1.5 ${
-                zipFilter === 'repo_only'
-                  ? 'bg-[#ea4335] text-white'
-                  : 'bg-[#f1f3f4] dark:bg-[#303134] text-[#ea4335]'
-              }`}
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>GitHub-Only (Legacy)</span>
-              <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-black/10">
-                {repoOnlyCount}
-              </span>
-            </button>
+              <button
+                onClick={() => setZipFilter('repo_only')}
+                className={`px-3 py-1.5 rounded-xl font-bold transition whitespace-nowrap flex items-center gap-1.5 ${
+                  zipFilter === 'repo_only'
+                    ? 'bg-[#ea4335] text-white'
+                    : 'bg-[#f1f3f4] dark:bg-[#303134] text-[#ea4335]'
+                }`}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>GitHub-Only (Legacy)</span>
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-black/10">
+                  {repoOnlyCount}
+                </span>
+              </button>
+            </div>
+
+            {/* Search within ZIP files */}
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[#80868b]" />
+              <input
+                type="text"
+                value={zipSearchQuery}
+                onChange={(e) => setZipSearchQuery(e.target.value)}
+                placeholder="Search file path in ZIP or repo..."
+                className="w-full pl-9 pr-3.5 py-1.5 bg-[#f8f9fa] dark:bg-[#202124] border border-[#dadce0] dark:border-[#3c4043] rounded-xl text-xs text-[#202124] dark:text-[#e8eaed] placeholder:text-[#80868b] focus:outline-none focus:border-[#0494f4]"
+              />
+            </div>
           </div>
 
           {/* Quick Explanation / Legacy Code Notice */}
@@ -776,32 +815,39 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
 
           {/* Selection controls & list */}
           <div className="space-y-2">
-            <div className="flex items-center justify-between text-xs text-[#5f6368] dark:text-[#9aa0a6] px-1">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[#5f6368] dark:text-[#9aa0a6] px-1">
               <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleSelectAllZipFiles(true)}
+                  className="text-[#0494f4] hover:underline font-bold"
+                >
+                  Select All ZIP ({totalZipCount})
+                </button>
+                <span>•</span>
                 <button
                   onClick={() => handleSelectAllFiltered(true)}
                   className="text-[#0494f4] hover:underline font-semibold"
                 >
-                  Select All
+                  Select Tab
                 </button>
                 <span>•</span>
                 <button
-                  onClick={() => handleSelectAllFiltered(false)}
+                  onClick={() => handleSelectAllZipFiles(false)}
                   className="text-[#5f6368] dark:text-[#9aa0a6] hover:underline"
                 >
                   Deselect All
                 </button>
               </div>
 
-              <span>
+              <span className="font-semibold text-[#202124] dark:text-[#e8eaed]">
                 {selectedUploadCount} to upload, {selectedDeleteCount} to delete
               </span>
             </div>
 
-            <div className="max-h-60 overflow-y-auto border border-[#dadce0] dark:border-[#3c4043] rounded-2xl bg-[#f8f9fa] dark:bg-[#202124] divide-y divide-[#dadce0] dark:divide-[#3c4043]">
+            <div className="max-h-64 overflow-y-auto border border-[#dadce0] dark:border-[#3c4043] rounded-2xl bg-[#f8f9fa] dark:bg-[#202124] divide-y divide-[#dadce0] dark:divide-[#3c4043]">
               {filteredZipDiff.length === 0 ? (
                 <div className="p-6 text-center text-xs text-[#80868b]">
-                  No files matching this filter.
+                  No files matching this filter or search query.
                 </div>
               ) : (
                 filteredZipDiff.map((item) => (
@@ -810,7 +856,7 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
                     onClick={() => toggleDiffItemSelection(item.path)}
                     className="flex items-center justify-between p-2.5 hover:bg-white dark:hover:bg-[#292a2d] transition cursor-pointer text-xs"
                   >
-                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1 pr-2">
                       {item.selected ? (
                         <CheckSquare className="w-4 h-4 text-[#0494f4] shrink-0" />
                       ) : (
@@ -823,6 +869,10 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
                     </div>
 
                     <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-[10px] text-[#5f6368] dark:text-[#9aa0a6] font-mono">
+                        {formatBytes(item.zipFile?.size || item.repoSize || 0)}
+                      </span>
+
                       {item.status === 'new' && (
                         <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#34a853]/15 text-[#34a853] border border-[#34a853]/30">
                           + New
@@ -840,7 +890,7 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
                       )}
                       {item.status === 'repo_only' && (
                         <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#ea4335]/15 text-[#ea4335] border border-[#ea4335]/30">
-                          GitHub-Only (Legacy)
+                          Legacy
                         </span>
                       )}
                     </div>
@@ -856,7 +906,7 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
               type="text"
               value={zipCommitMessage}
               onChange={(e) => setZipCommitMessage(e.target.value)}
-              placeholder="Commit message (e.g. Sync codebase from ZIP release)"
+              placeholder="Commit message (e.g. sync: update repository files from ZIP archive)"
               className="w-full px-3.5 py-2 bg-[#f8f9fa] dark:bg-[#202124] border border-[#dadce0] dark:border-[#3c4043] rounded-xl text-xs text-[#202124] dark:text-[#e8eaed] placeholder:text-[#80868b] focus:outline-none focus:border-[#0494f4]"
             />
 
@@ -884,7 +934,7 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
                 type="button"
                 onClick={() => setShowZipSyncPanel(false)}
                 disabled={isCommittingBatch}
-                className="px-4 py-2 bg-[#f1f3f4] dark:bg-[#303134] text-[#5f6368] dark:text-[#9aa0a6] text-xs font-semibold rounded-xl"
+                className="px-4 py-2 bg-[#f1f3f4] dark:bg-[#303134] text-[#5f6368] dark:text-[#9aa0a6] text-xs font-semibold rounded-xl cursor-pointer"
               >
                 Cancel
               </button>
@@ -893,12 +943,12 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
                 type="button"
                 onClick={handleExecuteBatchSync}
                 disabled={isCommittingBatch || (selectedUploadCount === 0 && selectedDeleteCount === 0)}
-                className="px-5 py-2.5 bg-[#0494f4] hover:bg-[#0382d6] active:scale-95 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-sm transition flex items-center gap-2"
+                className="px-5 py-2.5 bg-[#0494f4] hover:bg-[#0382d6] active:scale-95 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-sm transition flex items-center gap-2 cursor-pointer"
               >
                 {isCommittingBatch ? (
                   <>
                     <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    <span>Committing to GitHub...</span>
+                    <span>Pushing to GitHub...</span>
                   </>
                 ) : (
                   <>
@@ -973,6 +1023,18 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
           onClose={() => setShowNewFileModal(false)}
           onCreateFile={handleCreateNewFile}
           currentDirectory={currentPath}
+        />
+      )}
+
+      {/* Sync Result Verification Report Modal */}
+      {syncResultModal && selectedRepo && (
+        <SyncResultModal
+          isOpen={!!syncResultModal}
+          onClose={() => setSyncResultModal(null)}
+          result={syncResultModal}
+          repoOwner={selectedRepo.owner.login}
+          repoName={selectedRepo.name}
+          branch={selectedBranch}
         />
       )}
     </div>
