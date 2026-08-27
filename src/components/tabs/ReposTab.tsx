@@ -13,15 +13,19 @@ import {
   Layers,
   BookOpen,
   Filter,
+  GitCommit,
+  Activity,
+  Package,
 } from 'lucide-react';
 import { GitHubRepo } from '../../types/github';
 import { githubService } from '../../services/github';
 import { CreateRepoModal } from '../modals/CreateRepoModal';
+import { CodebaseSubTab } from './CodebaseTab';
 
 interface ReposTabProps {
   repos: GitHubRepo[];
   loading: boolean;
-  onSelectRepo: (repo: GitHubRepo, tab?: 'codebase' | 'issues') => void;
+  onSelectRepo: (repo: GitHubRepo, tab?: 'codebase' | 'issues', subTab?: CodebaseSubTab) => void;
   onRepoCreated: (repo: GitHubRepo) => void;
   onRepoDeleted: (repoId: number) => void;
   onRefresh: () => void;
@@ -237,17 +241,50 @@ export const ReposTab: React.FC<ReposTabProps> = ({
               </div>
 
               {/* Bottom Quick Action Buttons */}
-              <div className="pt-2 border-t border-[#dadce0] dark:border-[#3c4043] flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
+              <div className="pt-2 border-t border-[#dadce0] dark:border-[#3c4043] flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5 flex-wrap">
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      onSelectRepo(repo, 'codebase');
+                      onSelectRepo(repo, 'codebase', 'explorer');
                     }}
-                    className="flex items-center gap-1 text-xs font-bold text-[#0494f4] hover:underline"
+                    className="flex items-center gap-1 px-2.5 py-1 bg-[#0494f4]/10 hover:bg-[#0494f4]/20 text-[#0494f4] text-xs font-bold rounded-lg transition cursor-pointer"
                   >
                     <Code2 className="w-3.5 h-3.5" />
-                    <span>View Code & ZIP</span>
+                    <span>Code</span>
+                  </button>
+
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSelectRepo(repo, 'codebase', 'commits');
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1 bg-[#f1f3f4] dark:bg-[#303134] hover:bg-[#e8eaed] dark:hover:bg-[#3c4043] text-[#5f6368] dark:text-[#9aa0a6] hover:text-[#202124] dark:hover:text-[#e8eaed] text-xs font-semibold rounded-lg transition cursor-pointer"
+                  >
+                    <GitCommit className="w-3.5 h-3.5 text-[#0494f4]" />
+                    <span>Commits</span>
+                  </button>
+
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSelectRepo(repo, 'codebase', 'actions');
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1 bg-[#f1f3f4] dark:bg-[#303134] hover:bg-[#e8eaed] dark:hover:bg-[#3c4043] text-[#5f6368] dark:text-[#9aa0a6] hover:text-[#202124] dark:hover:text-[#e8eaed] text-xs font-semibold rounded-lg transition cursor-pointer"
+                  >
+                    <Activity className="w-3.5 h-3.5 text-[#34a853]" />
+                    <span>Actions</span>
+                  </button>
+
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSelectRepo(repo, 'codebase', 'releases');
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1 bg-[#f1f3f4] dark:bg-[#303134] hover:bg-[#e8eaed] dark:hover:bg-[#3c4043] text-[#5f6368] dark:text-[#9aa0a6] hover:text-[#202124] dark:hover:text-[#e8eaed] text-xs font-semibold rounded-lg transition cursor-pointer"
+                  >
+                    <Package className="w-3.5 h-3.5 text-[#fbbc04]" />
+                    <span>Releases</span>
                   </button>
 
                   <button
@@ -255,7 +292,7 @@ export const ReposTab: React.FC<ReposTabProps> = ({
                       e.stopPropagation();
                       onSelectRepo(repo, 'issues');
                     }}
-                    className="flex items-center gap-1 text-xs font-semibold text-[#5f6368] dark:text-[#9aa0a6] hover:text-[#202124] dark:hover:text-[#e8eaed]"
+                    className="flex items-center gap-1 px-2.5 py-1 bg-[#f1f3f4] dark:bg-[#303134] hover:bg-[#e8eaed] dark:hover:bg-[#3c4043] text-[#5f6368] dark:text-[#9aa0a6] hover:text-[#202124] dark:hover:text-[#e8eaed] text-xs font-semibold rounded-lg transition cursor-pointer"
                   >
                     <span>Issues ({repo.open_issues_count})</span>
                   </button>
@@ -265,7 +302,7 @@ export const ReposTab: React.FC<ReposTabProps> = ({
                   onClick={(e) => handleDeleteRepo(repo, e)}
                   disabled={deletingId === repo.id}
                   title="Delete Repository"
-                  className="p-1.5 text-[#5f6368] dark:text-[#9aa0a6] hover:text-[#ea4335] hover:bg-[#ea4335]/10 rounded-xl transition"
+                  className="p-1.5 text-[#5f6368] dark:text-[#9aa0a6] hover:text-[#ea4335] hover:bg-[#ea4335]/10 rounded-xl transition cursor-pointer shrink-0"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>

@@ -34,7 +34,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onSuccess }) => {
 
   // Pre-configured GitHub PAT creation link with all essential scopes for full access
   const githubPatUrl =
-    'https://github.com/settings/tokens/new?description=Gothwad%20Github%20Full%20Access&scopes=repo,workflow,write:packages,delete_repo,admin:org,admin:public_key,admin:repo_hook,user,project,gist,codespace';
+    'https://github.com/settings/tokens/new?description=Gothwad%20GoGit%20Full%20Access&scopes=repo,workflow,write:packages,delete_repo,admin:org,admin:public_key,admin:repo_hook,user,project,gist,codespace';
 
   const handleConnect = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -124,7 +124,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onSuccess }) => {
           </div>
           <div>
             <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-[#202124] dark:text-[#e8eaed]">
-              Gothwad Github
+              Gothwad GoGit
             </h1>
             <p className="text-xs sm:text-sm text-[#5f6368] dark:text-[#9aa0a6] mt-1 max-w-md mx-auto">
               Mobile GitHub Studio: Full Repository Manager, In-Browser Code Editor & ZIP Codebase Sync Engine

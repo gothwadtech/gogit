@@ -222,3 +222,258 @@ export interface BatchCommitProgress {
   percent: number;
   message: string;
 }
+
+// Commits & Time-Travel Graph Types
+export interface GitHubCommitAuthor {
+  name: string;
+  email: string;
+  date: string;
+}
+
+export interface GitHubCommitItem {
+  sha: string;
+  node_id: string;
+  commit: {
+    author: GitHubCommitAuthor;
+    committer: GitHubCommitAuthor;
+    message: string;
+    tree: {
+      sha: string;
+      url: string;
+    };
+    url: string;
+    comment_count: number;
+    verification?: {
+      verified: boolean;
+      reason: string;
+    };
+  };
+  url: string;
+  html_url: string;
+  comments_url: string;
+  author: {
+    login: string;
+    id: number;
+    avatar_url: string;
+    html_url: string;
+  } | null;
+  committer: {
+    login: string;
+    id: number;
+    avatar_url: string;
+    html_url: string;
+  } | null;
+  parents: Array<{
+    sha: string;
+    url: string;
+    html_url: string;
+  }>;
+}
+
+export interface GitHubCommitFile {
+  sha: string;
+  filename: string;
+  status: 'added' | 'removed' | 'modified' | 'renamed' | 'copied' | 'changed' | 'unchanged';
+  additions: number;
+  deletions: number;
+  changes: number;
+  blob_url: string;
+  raw_url: string;
+  contents_url: string;
+  patch?: string;
+  previous_filename?: string;
+}
+
+export interface GitHubCommitDetail extends GitHubCommitItem {
+  stats: {
+    total: number;
+    additions: number;
+    deletions: number;
+  };
+  files: GitHubCommitFile[];
+}
+
+// GitHub Actions & CI/CD Types
+export interface GitHubWorkflow {
+  id: number;
+  node_id: string;
+  name: string;
+  path: string;
+  state: 'active' | 'deleted' | 'disabled_fork' | 'disabled_inactivity' | 'disabled_manually';
+  created_at: string;
+  updated_at: string;
+  url: string;
+  html_url: string;
+  badge_url: string;
+}
+
+export interface GitHubWorkflowStep {
+  name: string;
+  status: 'queued' | 'in_progress' | 'completed';
+  conclusion: 'success' | 'failure' | 'neutral' | 'cancelled' | 'skipped' | 'timed_out' | 'action_required' | null;
+  number: number;
+  started_at?: string | null;
+  completed_at?: string | null;
+}
+
+export interface GitHubWorkflowJob {
+  id: number;
+  run_id: number;
+  workflow_name?: string;
+  head_branch: string;
+  run_attempt?: number;
+  node_id: string;
+  head_sha: string;
+  url: string;
+  html_url: string;
+  status: 'queued' | 'in_progress' | 'completed' | 'waiting';
+  conclusion: 'success' | 'failure' | 'neutral' | 'cancelled' | 'skipped' | 'timed_out' | 'action_required' | null;
+  started_at: string;
+  completed_at: string | null;
+  name: string;
+  steps?: GitHubWorkflowStep[];
+  check_run_url?: string;
+  labels: string[];
+  runner_id?: number | null;
+  runner_name?: string | null;
+}
+
+export interface GitHubWorkflowRun {
+  id: number;
+  name: string;
+  node_id: string;
+  head_branch: string;
+  head_sha: string;
+  path: string;
+  display_title: string;
+  run_number: number;
+  event: string;
+  status: 'queued' | 'in_progress' | 'completed' | 'waiting' | 'requested' | 'pending';
+  conclusion: 'success' | 'failure' | 'neutral' | 'cancelled' | 'skipped' | 'timed_out' | 'action_required' | 'stale' | null;
+  workflow_id: number;
+  url: string;
+  html_url: string;
+  jobs_url: string;
+  logs_url: string;
+  check_suite_url: string;
+  artifacts_url: string;
+  cancel_url: string;
+  rerun_url: string;
+  workflow_url: string;
+  head_commit: {
+    id: string;
+    tree_id: string;
+    message: string;
+    timestamp: string;
+    author: {
+      name: string;
+      email: string;
+    };
+    committer: {
+      name: string;
+      email: string;
+    };
+  } | null;
+  actor: {
+    login: string;
+    id: number;
+    avatar_url: string;
+    html_url: string;
+  } | null;
+  triggering_actor?: {
+    login: string;
+    avatar_url: string;
+  } | null;
+  run_attempt: number;
+  created_at: string;
+  updated_at: string;
+  run_started_at: string;
+}
+
+// GitHub Releases & Tags Types
+export interface GitHubReleaseAsset {
+  id: number;
+  node_id: string;
+  name: string;
+  label: string | null;
+  state: string;
+  size: number;
+  download_count: number;
+  created_at: string;
+  updated_at: string;
+  browser_download_url: string;
+  content_type: string;
+}
+
+export interface GitHubRelease {
+  id: number;
+  tag_name: string;
+  target_commitish: string;
+  name: string | null;
+  draft: boolean;
+  prerelease: boolean;
+  created_at: string;
+  published_at: string | null;
+  author: {
+    login: string;
+    avatar_url: string;
+    html_url: string;
+  };
+  html_url: string;
+  body: string | null;
+  assets: GitHubReleaseAsset[];
+  tarball_url: string;
+  zipball_url: string;
+}
+
+export interface GitHubOrg {
+  login: string;
+  id: number;
+  avatar_url: string;
+  description: string | null;
+  url: string;
+}
+
+export interface GitHubEvent {
+  id: string;
+  type: string;
+  actor: {
+    id: number;
+    login: string;
+    avatar_url: string;
+  };
+  repo: {
+    id: number;
+    name: string;
+    url: string;
+  };
+  payload?: {
+    action?: string;
+    ref?: string;
+    ref_type?: string;
+    description?: string;
+    commits?: Array<{ sha: string; message: string }>;
+    issue?: { number: number; title: string; html_url: string };
+    pull_request?: { number: number; title: string; html_url: string };
+  };
+  public: boolean;
+  created_at: string;
+}
+
+export interface GitHubSearchResult<T> {
+  total_count: number;
+  incomplete_results: boolean;
+  items: T[];
+}
+
+export interface GitHubTag {
+  name: string;
+  zipball_url: string;
+  tarball_url: string;
+  commit: {
+    sha: string;
+    url: string;
+  };
+  node_id: string;
+}
+

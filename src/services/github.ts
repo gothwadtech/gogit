@@ -9,7 +9,15 @@ import {
   GitHubGist,
   GitHubRateLimit,
   BatchCommitProgress,
+  GitHubCommitItem,
+  GitHubCommitDetail,
+  GitHubWorkflow,
+  GitHubWorkflowRun,
+  GitHubWorkflowJob,
+  GitHubRelease,
+  GitHubTag,
 } from '../types/github';
+import { safeStorage } from '../utils/safeStorage';
 
 const GITHUB_API_BASE = 'https://api.github.com';
 
@@ -18,7 +26,7 @@ class GitHubService {
   private userScopes: string[] = [];
 
   constructor() {
-    const savedToken = localStorage.getItem('gothwad_github_pat');
+    const savedToken = safeStorage.getItem('gothwad_github_pat');
     if (savedToken) {
       this.token = savedToken.trim();
     }
@@ -27,9 +35,9 @@ class GitHubService {
   public setToken(token: string) {
     this.token = token.trim();
     if (this.token) {
-      localStorage.setItem('gothwad_github_pat', this.token);
+      safeStorage.setItem('gothwad_github_pat', this.token);
     } else {
-      localStorage.removeItem('gothwad_github_pat');
+      safeStorage.removeItem('gothwad_github_pat');
     }
   }
 
@@ -327,22 +335,13 @@ class GitHubService {
     );
     const baseTreeSha = commitData.tree.sha;
 
-    // 3. Create Blobs with live progress
+    // 3. Create Blobs with fast parallel concurrency pool
     const treeEntries: Array<{ path: string; mode: string; type: 'blob'; sha: string | null }> = [];
+    const CONCURRENCY_LIMIT = 5;
+    let completedBlobCount = 0;
 
-    for (let i = 0; i < totalFiles; i++) {
-      const file = files[i];
-      const percent = Math.round(10 + (i / Math.max(totalFiles, 1)) * 60);
-
-      onProgress?.({
-        step: 'blobs',
-        currentFile: file.path,
-        completedFiles: i,
-        totalFiles: totalFiles + totalDeletes,
-        percent,
-        message: `Uploading blob ${i + 1}/${totalFiles}: ${file.path}`,
-      });
-
+    // Helper to upload single blob
+    const uploadSingleBlob = async (file: { path: string; content: string | Uint8Array; isBinary?: boolean }) => {
       let blobContent = '';
       let encoding = 'utf-8';
 
@@ -350,7 +349,6 @@ class GitHubService {
         blobContent = file.content;
         encoding = 'utf-8';
       } else {
-        // Binary Uint8Array -> base64
         let binary = '';
         const bytes = file.content;
         for (let j = 0; j < bytes.length; j++) {
@@ -369,12 +367,30 @@ class GitHubService {
         }),
       });
 
-      treeEntries.push({
-        path: file.path,
-        mode: '100644', // normal file
-        type: 'blob',
-        sha: blobRes.sha,
+      completedBlobCount++;
+      const percent = Math.round(10 + (completedBlobCount / Math.max(totalFiles, 1)) * 60);
+      onProgress?.({
+        step: 'blobs',
+        currentFile: file.path,
+        completedFiles: completedBlobCount,
+        totalFiles: totalFiles + totalDeletes,
+        percent,
+        message: `Uploaded blob ${completedBlobCount}/${totalFiles}: ${file.path}`,
       });
+
+      return {
+        path: file.path,
+        mode: '100644' as const,
+        type: 'blob' as const,
+        sha: blobRes.sha,
+      };
+    };
+
+    // Execute in parallel batches
+    for (let i = 0; i < files.length; i += CONCURRENCY_LIMIT) {
+      const chunk = files.slice(i, i + CONCURRENCY_LIMIT);
+      const chunkResults = await Promise.all(chunk.map((f) => uploadSingleBlob(f)));
+      treeEntries.push(...chunkResults);
     }
 
     // Add deleted paths to the tree entries with sha: null (Git Tree API deletes file from base_tree)
@@ -579,6 +595,243 @@ class GitHubService {
     return this.request<void>(`/user/starred/${owner}/${repo}`, {
       method: 'DELETE',
     });
+  }
+
+  // 9. Commits & Time-Travel Graph (Feature 6)
+  public async getCommits(
+    owner: string,
+    repo: string,
+    params: { sha?: string; path?: string; per_page?: number; page?: number } = {}
+  ): Promise<GitHubCommitItem[]> {
+    const query = new URLSearchParams();
+    if (params.sha) query.set('sha', params.sha);
+    if (params.path) query.set('path', params.path);
+    query.set('per_page', String(params.per_page || 30));
+    if (params.page) query.set('page', String(params.page));
+
+    return this.request<GitHubCommitItem[]>(`/repos/${owner}/${repo}/commits?${query.toString()}`);
+  }
+
+  public async getCommitDetail(owner: string, repo: string, ref: string): Promise<GitHubCommitDetail> {
+    return this.request<GitHubCommitDetail>(`/repos/${owner}/${repo}/commits/${ref}`);
+  }
+
+  public async getTreeAtCommit(owner: string, repo: string, commitSha: string): Promise<GitHubTreeItem[]> {
+    const commit = await this.getCommitDetail(owner, repo, commitSha);
+    const treeSha = commit.commit.tree.sha;
+    return this.getTree(owner, repo, treeSha);
+  }
+
+  // 10. GitHub Actions CI/CD (Feature 4)
+  public async getWorkflows(owner: string, repo: string): Promise<GitHubWorkflow[]> {
+    const res = await this.request<{ total_count: number; workflows: GitHubWorkflow[] }>(
+      `/repos/${owner}/${repo}/actions/workflows`
+    );
+    return res.workflows || [];
+  }
+
+  public async getWorkflowRuns(
+    owner: string,
+    repo: string,
+    params: { workflow_id?: number | string; branch?: string; event?: string; status?: string; per_page?: number } = {}
+  ): Promise<{ total_count: number; workflow_runs: GitHubWorkflowRun[] }> {
+    const query = new URLSearchParams();
+    if (params.branch) query.set('branch', params.branch);
+    if (params.event) query.set('event', params.event);
+    if (params.status) query.set('status', params.status);
+    query.set('per_page', String(params.per_page || 30));
+
+    const endpoint = params.workflow_id
+      ? `/repos/${owner}/${repo}/actions/workflows/${params.workflow_id}/runs?${query.toString()}`
+      : `/repos/${owner}/${repo}/actions/runs?${query.toString()}`;
+
+    return this.request<{ total_count: number; workflow_runs: GitHubWorkflowRun[] }>(endpoint);
+  }
+
+  public async getWorkflowRun(owner: string, repo: string, runId: number): Promise<GitHubWorkflowRun> {
+    return this.request<GitHubWorkflowRun>(`/repos/${owner}/${repo}/actions/runs/${runId}`);
+  }
+
+  public async getWorkflowRunJobs(owner: string, repo: string, runId: number): Promise<GitHubWorkflowJob[]> {
+    const res = await this.request<{ total_count: number; jobs: GitHubWorkflowJob[] }>(
+      `/repos/${owner}/${repo}/actions/runs/${runId}/jobs`
+    );
+    return res.jobs || [];
+  }
+
+  public async dispatchWorkflow(
+    owner: string,
+    repo: string,
+    workflowId: number | string,
+    data: { ref: string; inputs?: Record<string, string> }
+  ): Promise<void> {
+    return this.request<void>(`/repos/${owner}/${repo}/actions/workflows/${workflowId}/dispatches`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+  }
+
+  public async rerunWorkflow(owner: string, repo: string, runId: number, enableDebug = false): Promise<void> {
+    return this.request<void>(`/repos/${owner}/${repo}/actions/runs/${runId}/rerun`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enable_debug_logging: enableDebug }),
+    });
+  }
+
+  public async rerunFailedJobs(owner: string, repo: string, runId: number): Promise<void> {
+    return this.request<void>(`/repos/${owner}/${repo}/actions/runs/${runId}/rerun-failed-jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+  }
+
+  public async cancelWorkflowRun(owner: string, repo: string, runId: number): Promise<void> {
+    return this.request<void>(`/repos/${owner}/${repo}/actions/runs/${runId}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  public async getJobLogs(owner: string, repo: string, jobId: number): Promise<string> {
+    const url = `${GITHUB_API_BASE}/repos/${owner}/${repo}/actions/jobs/${jobId}/logs`;
+    const res = await fetch(url, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${this.token}`,
+      },
+    });
+    if (!res.ok) {
+      throw new Error(`Failed to fetch logs: ${res.statusText}`);
+    }
+    return res.text();
+  }
+
+  // 11. GitHub Releases & Tags (Feature 8)
+  public async getReleases(owner: string, repo: string, per_page = 30): Promise<GitHubRelease[]> {
+    return this.request<GitHubRelease[]>(`/repos/${owner}/${repo}/releases?per_page=${per_page}`);
+  }
+
+  public async getRelease(owner: string, repo: string, releaseId: number): Promise<GitHubRelease> {
+    return this.request<GitHubRelease>(`/repos/${owner}/${repo}/releases/${releaseId}`);
+  }
+
+  public async getTags(owner: string, repo: string): Promise<GitHubTag[]> {
+    return this.request<GitHubTag[]>(`/repos/${owner}/${repo}/tags?per_page=50`);
+  }
+
+  public async createRelease(
+    owner: string,
+    repo: string,
+    data: {
+      tag_name: string;
+      target_commitish?: string;
+      name?: string;
+      body?: string;
+      draft?: boolean;
+      prerelease?: boolean;
+      generate_release_notes?: boolean;
+    }
+  ): Promise<GitHubRelease> {
+    return this.request<GitHubRelease>(`/repos/${owner}/${repo}/releases`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+  }
+
+  public async deleteRelease(owner: string, repo: string, releaseId: number): Promise<void> {
+    return this.request<void>(`/repos/${owner}/${repo}/releases/${releaseId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  public async generateReleaseNotes(
+    owner: string,
+    repo: string,
+    tag_name: string,
+    target_commitish?: string,
+    previous_tag_name?: string
+  ): Promise<{ name: string; body: string }> {
+    return this.request<{ name: string; body: string }>(`/repos/${owner}/${repo}/releases/generate-notes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tag_name,
+        target_commitish,
+        previous_tag_name,
+      }),
+    });
+  }
+
+  // 12. Full Pull Requests Operations & Reviews
+  public async getPullRequest(owner: string, repo: string, pullNumber: number): Promise<GitHubPullRequest> {
+    return this.request<GitHubPullRequest>(`/repos/${owner}/${repo}/pulls/${pullNumber}`);
+  }
+
+  public async mergePullRequest(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+    data: {
+      commit_title?: string;
+      commit_message?: string;
+      merge_method?: 'merge' | 'squash' | 'rebase';
+    } = {}
+  ): Promise<{ sha: string; merged: boolean; message: string }> {
+    return this.request<{ sha: string; merged: boolean; message: string }>(
+      `/repos/${owner}/${repo}/pulls/${pullNumber}/merge`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      }
+    );
+  }
+
+  public async closePullRequest(owner: string, repo: string, pullNumber: number): Promise<GitHubPullRequest> {
+    return this.request<GitHubPullRequest>(`/repos/${owner}/${repo}/pulls/${pullNumber}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ state: 'closed' }),
+    });
+  }
+
+  public async getPullRequestFiles(owner: string, repo: string, pullNumber: number): Promise<any[]> {
+    return this.request<any[]>(`/repos/${owner}/${repo}/pulls/${pullNumber}/files`);
+  }
+
+  // 13. Explore, Search & User Activity
+  public async searchRepositories(
+    query: string,
+    sort: 'stars' | 'forks' | 'updated' = 'stars',
+    order: 'desc' | 'asc' = 'desc',
+    page = 1,
+    per_page = 25
+  ): Promise<{ total_count: number; items: GitHubRepo[] }> {
+    const q = encodeURIComponent(query || 'stars:>1000');
+    return this.request<{ total_count: number; items: GitHubRepo[] }>(
+      `/search/repositories?q=${q}&sort=${sort}&order=${order}&page=${page}&per_page=${per_page}`
+    );
+  }
+
+  public async getTrendingRepositories(language?: string): Promise<GitHubRepo[]> {
+    let q = 'stars:>500';
+    if (language && language !== 'all') {
+      q += ` language:${language}`;
+    }
+    const res = await this.searchRepositories(q, 'stars', 'desc', 1, 30);
+    return res.items || [];
+  }
+
+  public async getUserEvents(username: string, page = 1): Promise<any[]> {
+    return this.request<any[]>(`/users/${username}/events?per_page=30&page=${page}`);
+  }
+
+  public async getUserOrgs(): Promise<any[]> {
+    return this.request<any[]>('/user/orgs?per_page=50');
   }
 }
 

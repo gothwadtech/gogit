@@ -35,7 +35,7 @@ export const FolderAnalysisCard: React.FC<FolderAnalysisCardProps> = ({
   const pathDisplay = analysis.isRoot ? 'root directory' : `/${analysis.path}`;
 
   return (
-    <div className="bg-gradient-to-br from-[#f8f9fa] to-white dark:from-[#202124] dark:to-[#292a2d] border border-[#dadce0] dark:border-[#3c4043] rounded-3xl p-4 sm:p-5 shadow-sm space-y-4 transition-all duration-200">
+    <div className="bg-white dark:bg-[#202124] border border-[#dadce0] dark:border-[#3c4043] rounded-3xl p-4 sm:p-5 shadow-sm space-y-4 transition-all duration-200">
       {/* Top Banner & Quick Metrics */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">

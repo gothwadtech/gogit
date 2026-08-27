@@ -18,6 +18,12 @@ import {
   FileUp,
   Layers,
   Sparkles,
+  GitCommit,
+  Activity,
+  Package,
+  Clock,
+  RotateCcw,
+  Zap,
 } from 'lucide-react';
 import {
   GitHubRepo,
@@ -32,19 +38,33 @@ import { githubService } from '../../services/github';
 import { parseZipArchive } from '../../utils/zipParser';
 import { CodeViewer } from '../common/CodeViewer';
 import { NewFileModal } from '../modals/NewFileModal';
+import { UniversalUploadModal } from '../modals/UniversalUploadModal';
 import { CodebaseExplorer } from '../common/CodebaseExplorer';
+import { CommitsView } from './CommitsView';
+import { ActionsView } from './ActionsView';
+import { ReleasesView } from './ReleasesView';
+
+export type CodebaseSubTab = 'explorer' | 'commits' | 'actions' | 'releases' | 'zipsync';
 
 interface CodebaseTabProps {
   repos: GitHubRepo[];
   selectedRepo: GitHubRepo | null;
   onSelectRepo: (repo: GitHubRepo) => void;
+  initialSubTab?: CodebaseSubTab;
 }
 
 export const CodebaseTab: React.FC<CodebaseTabProps> = ({
   repos,
   selectedRepo,
   onSelectRepo,
+  initialSubTab = 'explorer',
 }) => {
+  // Sub-Navigation Mode
+  const [activeSubTab, setActiveSubTab] = useState<CodebaseSubTab>(initialSubTab);
+
+  // Time-Travel State
+  const [timeTravelSha, setTimeTravelSha] = useState<string | null>(null);
+
   // Branch & Navigation State
   const [branches, setBranches] = useState<GitHubBranch[]>([]);
   const [selectedBranch, setSelectedBranch] = useState<string>('');
@@ -64,6 +84,7 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
 
   // Modals
   const [showNewFileModal, setShowNewFileModal] = useState(false);
+  const [showUniversalUploadModal, setShowUniversalUploadModal] = useState(false);
 
   // ZIP Sync & Diff State
   const [zipFiles, setZipFiles] = useState<ZipExtractedFile[]>([]);
@@ -82,15 +103,18 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
   useEffect(() => {
     if (!selectedRepo) return;
     loadBranches(selectedRepo);
+    setTimeTravelSha(null);
   }, [selectedRepo]);
 
   // Load Tree when branch or repo changes
   useEffect(() => {
     if (!selectedRepo || !selectedBranch) return;
-    loadTree(selectedRepo, selectedBranch);
+    if (!timeTravelSha) {
+      loadTree(selectedRepo, selectedBranch);
+    }
     setActiveFile(null);
     setCurrentPath('');
-  }, [selectedRepo, selectedBranch]);
+  }, [selectedRepo, selectedBranch, timeTravelSha]);
 
   const loadBranches = async (repo: GitHubRepo) => {
     try {
@@ -119,15 +143,41 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
     }
   };
 
+  const handleTimeTravel = async (commitSha: string) => {
+    if (!selectedRepo) return;
+    try {
+      setLoadingTree(true);
+      setTimeTravelSha(commitSha);
+      setActiveSubTab('explorer');
+      setActiveFile(null);
+      setCurrentPath('');
+      const items = await githubService.getTreeAtCommit(selectedRepo.owner.login, selectedRepo.name, commitSha);
+      setTreeItems(items);
+    } catch (err: any) {
+      alert(`Time travel failed: ${err.message || 'Could not fetch commit snapshot'}`);
+      setTimeTravelSha(null);
+    } finally {
+      setLoadingTree(false);
+    }
+  };
+
+  const handleReturnToLive = () => {
+    setTimeTravelSha(null);
+    if (selectedRepo && selectedBranch) {
+      loadTree(selectedRepo, selectedBranch);
+    }
+  };
+
   const handleOpenFile = async (item: GitHubTreeItem) => {
     if (!selectedRepo) return;
     try {
       setLoadingFile(true);
+      const refToUse = timeTravelSha || selectedBranch;
       const res = await githubService.getFileContent(
         selectedRepo.owner.login,
         selectedRepo.name,
         item.path,
-        selectedBranch
+        refToUse
       );
       setActiveFile({
         path: item.path,
@@ -145,6 +195,10 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
 
   const handleSaveFileContent = async (newContent: string, commitMsg: string) => {
     if (!selectedRepo || !activeFile) return;
+    if (timeTravelSha) {
+      alert('Cannot edit files in historic Time-Travel mode. Return to live branch to make changes.');
+      return;
+    }
     try {
       const result = await githubService.createOrUpdateFile(
         selectedRepo.owner.login,
@@ -169,6 +223,10 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
 
   const handleDeleteActiveFile = async () => {
     if (!selectedRepo || !activeFile) return;
+    if (timeTravelSha) {
+      alert('Cannot delete files in historic Time-Travel mode.');
+      return;
+    }
     if (!confirm(`Are you sure you want to delete ${activeFile.path} from branch ${selectedBranch}?`)) return;
 
     try {
@@ -189,6 +247,10 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
 
   const handleCreateNewFile = async (filePath: string, content: string, commitMsg: string) => {
     if (!selectedRepo) return;
+    if (timeTravelSha) {
+      alert('Cannot create files in historic Time-Travel mode.');
+      return;
+    }
     await githubService.createOrUpdateFile(
       selectedRepo.owner.login,
       selectedRepo.name,
@@ -434,23 +496,35 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
           )}
         </div>
 
-        {/* Action Buttons: ZIP Upload / Sync, New File, Refresh */}
+        {/* Action Buttons: Smart Upload Studio, ZIP Upload / Sync, New File, Refresh */}
         <div className="flex items-center justify-between gap-2 pt-2 border-t border-[#dadce0] dark:border-[#3c4043] flex-wrap">
           <div className="flex items-center gap-2 flex-wrap">
             <button
-              id="upload-zip-btn"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isParsingZip}
-              className="flex items-center gap-1.5 px-4 py-2 bg-[#0494f4] hover:bg-[#0382d6] active:scale-95 text-white text-xs font-bold rounded-2xl shadow-sm transition"
+              id="smart-upload-studio-btn"
+              onClick={() => setShowUniversalUploadModal(true)}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 bg-[#0494f4] hover:bg-[#0382d6] active:scale-95 text-white text-xs font-bold rounded-2xl shadow-xs transition cursor-pointer"
             >
-              <Upload className="w-4 h-4" />
-              <span>{isParsingZip ? 'Unpacking ZIP...' : 'Upload & Sync ZIP'}</span>
+              <Zap className="w-3.5 h-3.5" />
+              <span>Smart Upload & Commit</span>
+            </button>
+
+            <button
+              id="upload-zip-btn"
+              onClick={() => {
+                setActiveSubTab('zipsync');
+                fileInputRef.current?.click();
+              }}
+              disabled={isParsingZip}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#f1f3f4] dark:bg-[#303134] hover:bg-[#e8eaed] dark:hover:bg-[#3c4043] text-[#202124] dark:text-[#e8eaed] text-xs font-semibold rounded-2xl border border-[#dadce0] dark:border-[#3c4043] transition cursor-pointer"
+            >
+              <Upload className="w-3.5 h-3.5 text-[#0494f4]" />
+              <span>{isParsingZip ? 'Unpacking...' : 'ZIP Diff Sync'}</span>
             </button>
 
             <button
               id="create-new-file-btn"
               onClick={() => setShowNewFileModal(true)}
-              className="flex items-center gap-1.5 px-3.5 py-2 bg-[#f1f3f4] dark:bg-[#303134] hover:bg-[#e8eaed] dark:hover:bg-[#3c4043] text-[#202124] dark:text-[#e8eaed] text-xs font-semibold rounded-2xl border border-[#dadce0] dark:border-[#3c4043] transition"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#f1f3f4] dark:bg-[#303134] hover:bg-[#e8eaed] dark:hover:bg-[#3c4043] text-[#202124] dark:text-[#e8eaed] text-xs font-semibold rounded-2xl border border-[#dadce0] dark:border-[#3c4043] transition cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5 text-[#0494f4]" />
               <span>New File</span>
@@ -459,18 +533,153 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
 
           <button
             onClick={() => {
-              if (selectedRepo && selectedBranch) loadTree(selectedRepo, selectedBranch);
+              if (selectedRepo && selectedBranch) {
+                if (timeTravelSha) {
+                  handleTimeTravel(timeTravelSha);
+                } else {
+                  loadTree(selectedRepo, selectedBranch);
+                }
+              }
             }}
             title="Refresh tree"
-            className="p-2 text-[#5f6368] dark:text-[#9aa0a6] hover:text-[#202124] dark:hover:text-[#e8eaed] hover:bg-[#f1f3f4] dark:hover:bg-[#303134] rounded-xl transition"
+            className="p-2 text-[#5f6368] dark:text-[#9aa0a6] hover:text-[#202124] dark:hover:text-[#e8eaed] hover:bg-[#f1f3f4] dark:hover:bg-[#303134] rounded-xl transition cursor-pointer"
           >
             <RefreshCw className={`w-4 h-4 ${loadingTree ? 'animate-spin text-[#0494f4]' : ''}`} />
           </button>
         </div>
+
+        {/* 5-Sub-Tab Navigation Bar */}
+        <div className="pt-2 border-t border-[#dadce0]/60 dark:border-[#3c4043]/60 flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none text-xs">
+          <button
+            onClick={() => {
+              setActiveSubTab('explorer');
+              setActiveFile(null);
+            }}
+            className={`px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+              activeSubTab === 'explorer'
+                ? 'bg-[#0494f4] text-white shadow-xs'
+                : 'bg-[#f8f9fa] dark:bg-[#202124] text-[#5f6368] dark:text-[#9aa0a6] hover:text-[#202124] dark:hover:text-[#e8eaed]'
+            }`}
+          >
+            <FileCode className="w-3.5 h-3.5" />
+            <span>Code & Files</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setActiveSubTab('commits');
+              setActiveFile(null);
+            }}
+            className={`px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+              activeSubTab === 'commits'
+                ? 'bg-[#0494f4] text-white shadow-xs'
+                : 'bg-[#f8f9fa] dark:bg-[#202124] text-[#5f6368] dark:text-[#9aa0a6] hover:text-[#202124] dark:hover:text-[#e8eaed]'
+            }`}
+          >
+            <GitCommit className="w-3.5 h-3.5" />
+            <span>Commits & Time-Travel</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setActiveSubTab('actions');
+              setActiveFile(null);
+            }}
+            className={`px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+              activeSubTab === 'actions'
+                ? 'bg-[#0494f4] text-white shadow-xs'
+                : 'bg-[#f8f9fa] dark:bg-[#202124] text-[#5f6368] dark:text-[#9aa0a6] hover:text-[#202124] dark:hover:text-[#e8eaed]'
+            }`}
+          >
+            <Activity className="w-3.5 h-3.5" />
+            <span>Actions CI/CD</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setActiveSubTab('releases');
+              setActiveFile(null);
+            }}
+            className={`px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+              activeSubTab === 'releases'
+                ? 'bg-[#0494f4] text-white shadow-xs'
+                : 'bg-[#f8f9fa] dark:bg-[#202124] text-[#5f6368] dark:text-[#9aa0a6] hover:text-[#202124] dark:hover:text-[#e8eaed]'
+            }`}
+          >
+            <Package className="w-3.5 h-3.5" />
+            <span>Releases & Tags</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setActiveSubTab('zipsync');
+              setShowZipSyncPanel(true);
+            }}
+            className={`px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+              activeSubTab === 'zipsync' || showZipSyncPanel
+                ? 'bg-[#0494f4] text-white shadow-xs'
+                : 'bg-[#f8f9fa] dark:bg-[#202124] text-[#5f6368] dark:text-[#9aa0a6] hover:text-[#202124] dark:hover:text-[#e8eaed]'
+            }`}
+          >
+            <Upload className="w-3.5 h-3.5" />
+            <span>ZIP Sync Engine</span>
+          </button>
+        </div>
       </div>
 
-      {/* ZIP Sync & Legacy Code Diff Section (when ZIP is uploaded) */}
-      {showZipSyncPanel && (
+      {/* Time-Travel Active Banner */}
+      {timeTravelSha && (
+        <div className="bg-[#0494f4]/15 border-2 border-[#0494f4] rounded-3xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-md animate-in fade-in">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="p-2 bg-[#0494f4] text-white rounded-xl shrink-0">
+              <Clock className="w-4 h-4" />
+            </div>
+            <div>
+              <h4 className="font-bold text-[#0494f4]">
+                Time-Travel Active: Historic Commit Snapshot
+              </h4>
+              <p className="text-[#5f6368] dark:text-[#9aa0a6] font-mono text-[11px] truncate">
+                Browsing codebase at SHA <strong>{timeTravelSha}</strong> (Read-Only)
+              </p>
+            </div>
+          </div>
+
+          <button
+            onClick={handleReturnToLive}
+            className="px-4 py-2 bg-[#0494f4] hover:bg-[#037acf] text-white font-bold text-xs rounded-xl flex items-center gap-1.5 shadow-sm transition cursor-pointer self-start sm:self-auto shrink-0"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>Return to Live Branch</span>
+          </button>
+        </div>
+      )}
+
+      {/* Render Active Sub-View */}
+      {selectedRepo && activeSubTab === 'commits' ? (
+        <CommitsView
+          repo={selectedRepo}
+          branches={branches}
+          selectedBranch={selectedBranch}
+          onSelectBranch={(b) => setSelectedBranch(b)}
+          onTimeTravel={handleTimeTravel}
+        />
+      ) : selectedRepo && activeSubTab === 'actions' ? (
+        <ActionsView
+          repo={selectedRepo}
+          branches={branches}
+          selectedBranch={selectedBranch}
+        />
+      ) : selectedRepo && activeSubTab === 'releases' ? (
+        <ReleasesView
+          repo={selectedRepo}
+          branches={branches}
+          selectedBranch={selectedBranch}
+        />
+      ) : (
+        /* Explorer / File Tree or ZIP Sync */
+        <>
+          {/* ZIP Sync Panel */}
+          {showZipSyncPanel && (
         <div className="bg-white dark:bg-[#292a2d] border-2 border-[#0494f4] rounded-3xl p-5 shadow-lg space-y-4 transition-colors duration-200">
           <div className="flex items-start justify-between gap-3">
             <div>
@@ -737,6 +946,23 @@ export const CodebaseTab: React.FC<CodebaseTabProps> = ({
           onOpenFile={(file) => handleOpenFile(file)}
           onCreateNewFile={() => setShowNewFileModal(true)}
           loading={loadingTree}
+        />
+      )}
+      </>
+      )}
+
+      {/* Universal Multi-Mode Upload Modal */}
+      {showUniversalUploadModal && selectedRepo && (
+        <UniversalUploadModal
+          isOpen={showUniversalUploadModal}
+          onClose={() => setShowUniversalUploadModal(false)}
+          repo={selectedRepo}
+          currentBranch={selectedBranch}
+          branches={branches}
+          onUploadSuccess={(branchName) => {
+            setSelectedBranch(branchName);
+            loadTree(selectedRepo, branchName);
+          }}
         />
       )}
 

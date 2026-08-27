@@ -1,168 +1,121 @@
 import React from 'react';
+import {
+  FolderGit2,
+  Code2,
+  GitPullRequest,
+  AlertCircle,
+  Compass,
+  User,
+} from 'lucide-react';
+import { GitHubUser } from '../types/github';
 
-export type TabType = 'repos' | 'codebase' | 'issues' | 'gists' | 'profile';
+export type TabType = 'repos' | 'codebase' | 'pulls' | 'issues' | 'explore' | 'profile';
 
 interface BottomNavProps {
   activeTab: TabType;
   onTabChange: (tab: TabType) => void;
-  hasActiveRepo: boolean;
+  hasActiveRepo?: boolean;
   issuesCount?: number;
+  user?: GitHubUser | null;
 }
 
 export const BottomNav: React.FC<BottomNavProps> = ({
   activeTab,
   onTabChange,
-  hasActiveRepo,
   issuesCount = 0,
+  user,
 }) => {
   const navItems: Array<{
     id: TabType;
     label: string;
     badge?: number | string;
-    svg: (active: boolean) => React.ReactNode;
+    icon: React.ComponentType<{ className?: string }>;
+    isAvatar?: boolean;
   }> = [
     {
       id: 'repos',
       label: 'Repos',
-      svg: (active) => (
-        <svg
-          className="w-5 h-5 transition-transform"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={active ? '2.4' : '1.8'}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z" />
-          <path d="M6 6h10" />
-          <path d="M6 10h10" />
-          <path d="M6 14h6" />
-        </svg>
-      ),
+      icon: FolderGit2,
     },
     {
       id: 'codebase',
       label: 'Code',
-      badge: hasActiveRepo ? '●' : undefined,
-      svg: (active) => (
-        <svg
-          className="w-5 h-5 transition-transform"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={active ? '2.4' : '1.8'}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <polyline points="16 18 22 12 16 6" />
-          <polyline points="8 6 2 12 8 18" />
-          <path d="M12 2v4" />
-          <path d="M12 18v4" />
-        </svg>
-      ),
+      icon: Code2,
+    },
+    {
+      id: 'pulls',
+      label: 'Pulls',
+      icon: GitPullRequest,
     },
     {
       id: 'issues',
       label: 'Issues',
       badge: issuesCount > 0 ? issuesCount : undefined,
-      svg: (active) => (
-        <svg
-          className="w-5 h-5 transition-transform"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={active ? '2.4' : '1.8'}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <circle cx="18" cy="18" r="3" />
-          <circle cx="6" cy="6" r="3" />
-          <path d="M13 6h3a2 2 0 0 1 2 2v7" />
-          <line x1="6" y1="9" x2="6" y2="21" />
-        </svg>
-      ),
+      icon: AlertCircle,
     },
     {
-      id: 'gists',
-      label: 'Gists',
-      svg: (active) => (
-        <svg
-          className="w-5 h-5 transition-transform"
-          viewBox="0 0 24 24"
-          fill={active ? 'currentColor' : 'none'}
-          stroke="currentColor"
-          strokeWidth={active ? '1.5' : '1.8'}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-        </svg>
-      ),
+      id: 'explore',
+      label: 'Explore',
+      icon: Compass,
     },
     {
       id: 'profile',
       label: 'Profile',
-      svg: (active) => (
-        <svg
-          className="w-5 h-5 transition-transform"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={active ? '2.4' : '1.8'}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
-          <circle cx="12" cy="7" r="4" />
-        </svg>
-      ),
+      icon: User,
+      isAvatar: true,
     },
   ];
 
   return (
     <nav
       id="mobile-bottom-navigation"
-      aria-label="Play Store Style Mobile Navigation"
-      className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-md border-t border-[#dadce0] dark:border-[#3c4043] pb-safe shadow-lg transition-colors duration-200"
+      aria-label="Bottom Navigation"
+      className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-md border-t border-x border-[#dadce0] dark:border-[#3c4043] rounded-t-2xl sm:rounded-t-3xl pb-safe shadow-xl transition-colors duration-200"
     >
-      <div className="max-w-md sm:max-w-lg md:max-w-xl mx-auto flex items-center justify-around px-2 pt-2 pb-1.5">
+      <div className="max-w-2xl mx-auto flex items-center justify-around px-2 py-1.5 min-h-[56px] sm:min-h-[60px]">
         {navItems.map((item) => {
           const isActive = activeTab === item.id;
+          const Icon = item.icon;
+
           return (
             <button
               key={item.id}
               id={`tab-btn-${item.id}`}
               onClick={() => onTabChange(item.id)}
-              className="flex flex-col items-center justify-center flex-1 transition-all duration-200 group active:scale-95 cursor-pointer py-0.5"
+              type="button"
+              className="flex flex-col items-center justify-center flex-1 cursor-pointer py-0.5 px-0.5 min-w-0 select-none group"
             >
-              {/* Play Store Active Pill Indicator */}
+              {/* Stable Pill Container */}
               <div
-                className={`relative w-14 sm:w-16 h-8 rounded-full flex items-center justify-center transition-all duration-200 ${
+                className={`relative w-12 sm:w-14 h-7 sm:h-7.5 rounded-full flex items-center justify-center transition-colors duration-150 ${
                   isActive
                     ? 'bg-[#0494f4]/15 dark:bg-[#0494f4]/25 text-[#0494f4]'
                     : 'text-[#5f6368] dark:text-[#9aa0a6] hover:bg-black/5 dark:hover:bg-white/5'
                 }`}
               >
-                {item.svg(isActive)}
-
-                {/* Badge Container */}
-                {item.badge !== undefined && (
-                  <span
-                    className={`absolute -top-0.5 right-2 text-[10px] font-bold px-1.5 py-0.2 rounded-full leading-tight flex items-center justify-center ${
-                      item.badge === '●'
-                        ? 'text-[#0494f4] text-xs'
-                        : 'bg-[#0494f4] text-white min-w-4 h-4 text-[10px]'
+                {item.isAvatar && user?.avatar_url ? (
+                  <img
+                    src={user.avatar_url}
+                    alt={user.login}
+                    className={`w-5 h-5 sm:w-5.5 sm:h-5.5 rounded-full object-cover border ${
+                      isActive ? 'border-[#0494f4] ring-1 ring-[#0494f4]' : 'border-[#dadce0] dark:border-[#3c4043]'
                     }`}
-                  >
+                  />
+                ) : (
+                  <Icon className={`w-5 h-5 sm:w-5.5 sm:h-5.5 ${isActive ? 'stroke-[2.2]' : 'stroke-[1.8]'}`} />
+                )}
+
+                {/* Numeric Badge (e.g. Issues Count) */}
+                {item.badge !== undefined && (
+                  <span className="absolute -top-1 -right-0.5 bg-[#ea4335] text-white min-w-4 h-4 text-[9px] font-bold px-1 rounded-full flex items-center justify-center shadow-xs">
                     {item.badge}
                   </span>
                 )}
               </div>
 
-              {/* Short Label (Play Store standard: 11px font) */}
+              {/* Label */}
               <span
-                className={`text-[11px] tracking-tight mt-1 truncate max-w-[64px] leading-none transition-colors duration-200 ${
+                className={`text-[10.5px] sm:text-[11px] tracking-tight mt-0.5 truncate max-w-[58px] sm:max-w-[70px] leading-tight transition-colors duration-150 ${
                   isActive
                     ? 'text-[#0494f4] font-bold'
                     : 'text-[#5f6368] dark:text-[#9aa0a6] font-medium'
